@@ -186,30 +186,33 @@ class GenCfg:
 def _build_messages(task: str, cfg: GenCfg) -> list[dict[str, str]]:
     guidance = _spice_to_guidance(cfg.spice)
     system = (
-        "You are Magic ToDo. You break tasks into actionable checklists.\n"
+        "You are Magic ToDo, an ADHD-friendly task breakdown tool.\n"
         "You MUST respond with ONLY a JSON object — no prose, no markdown, no lists.\n"
         "Schema: {\"title\": \"...\", \"steps\": [{\"text\": \"...\", \"substeps\": null}]}\n"
-        "After the JSON, output ENDJSON on its own line."
+        "After the JSON, output ENDJSON on its own line.\n\n"
+        "Voice rules:\n"
+        "- Be CONCISE. Every step is max ~10 words. Walls of text cause shutdown.\n"
+        "- Assume the user does NOT write code by hand — prefer CLI tools, generators,\n"
+        "  templates, and automation over manual editing.\n"
+        "- Still break things down thoroughly — many small steps, not few big ones.\n"
+        "- Start each step with a verb. No filler words.\n"
+        "- If a good tool exists, name it with one alternative (e.g. 'using X or Y').\n"
+        "- NEVER: 'consider', 'ensure', 'review', 'plan', 'finalize', 'research options'."
     )
     user_parts = [
         f"{guidance}\n"
-        "Rules:\n"
-        "- Every step MUST be a concrete verb-phrase action.\n"
-        "- If a good default tool exists, mention it with an alternative "
-        "(e.g. 'Resize images using ImageMagick or ffmpeg').\n"
-        "- NEVER include vague steps like 'plan the project' or 'review everything'.\n"
-        "- No duplicates. Order by dependency. Sub-steps only when needed.\n"
     ]
     if cfg.context:
         user_parts.append(
-            "\nExisting breakdowns (learn from the user's style):\n"
+            "\nExisting breakdowns (match this style):\n"
             f"{cfg.context.strip()}\n"
         )
     user_parts.append(
         "\nExample output:\n"
         '{"title": "Deploy app", "steps": ['
-        '{"text": "Build Docker image using docker build or podman build", "substeps": null}, '
-        '{"text": "Push image to registry using docker push or crane push", "substeps": null}'
+        '{"text": "Build image with docker build or podman", "substeps": null}, '
+        '{"text": "Push to registry with docker push or crane", "substeps": null}, '
+        '{"text": "Apply k8s manifest with kubectl apply", "substeps": null}'
         "]}\nENDJSON\n\n"
         f"Task: {task.strip()}\n"
     )
