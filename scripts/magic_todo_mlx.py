@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""
+Magic ToDo (terminal) using local MLX-LM models.
+
+Runs entirely locally (no network needed at runtime) assuming the model is
+already present in the HuggingFace cache.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+
+HF_CACHE_DEFAULT = Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _guess_cached_mlx_community_models(cache_root: Path) -> list[str]:
+    if not cache_root.exists():
+        return []
+
+    out: list[str] = []
+    for p in cache_root.glob("models--mlx-community--*"):
+        name = p.name.removeprefix("models--").replace("--", "/", 1)
+        # name is now "mlx-community/<repo>"
+        out.append(name)
+    return sorted(out)
+
+
+def _spice_to_target_steps(spice: int) -> tuple[int, int]:
+    # Roughly matches the "more/fewer steps" intent of goblin.tools' spiciness.
+    # We do not know their internal mapping; this is practical and tunable.
+    return {
+        1: (3, 6),
+        2: (6, 10),
+        3: (10, 16),
+        4: (16, 24),
+        5: (24, 36),
+    }[spice]
+
+
+def _spice_to_exact_steps(spice: int) -> int:
+    # Small instruct models do better with "exactly N" than a range.
+    return {1: 5, 2: 8, 3: 12, 4: 18, 5: 28}[spice]
+
+
+def _extract_first_json_object(text: str) -> str:
+    """
+    Best-effort extractor: find the first {...} JSON object in model output.
+    """
+    # Preferred: sentinel terminator.
+    if "ENDJSON" in text:
+        before = text.split("ENDJSON", 1)[0]
+        start = before.find("{")
+        end = before.rfind("}")
+        if start >= 0 and end > start:
+            return before[start : end + 1].strip()
+
+    # Prefer fenced JSON blocks if present.
+    m = re.search(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Otherwise, scan for balanced braces.
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("No JSON object found in model output.")
+
+    depth = 0
+    for i in range(start, len(text)):
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1].strip()
+
+    raise ValueError("Unbalanced JSON braces in model output.")
+
+
+def _validate_plan(obj: Any) -> dict[str, Any]:
+    if not isinstance(obj, dict):
+        raise ValueError("Plan JSON must be an object.")
+    steps = obj.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise ValueError("Plan JSON must contain non-empty 'steps' array.")
+    for s in steps:
+        if not isinstance(s, dict) or not isinstance(s.get("text"), str) or not s["text"].strip():
+            raise ValueError("Each step must be an object with non-empty 'text'.")
+    return obj
+
+
+@dataclass(frozen=True)
+class GenCfg:
+    model: str
+    spice: int
+    max_tokens: int
+    temp: float
+    top_p: float
+    seed: int | None
+
+
+def _build_prompt(task: str, cfg: GenCfg) -> str:
+    lo, hi = _spice_to_target_steps(cfg.spice)
+    n_steps = _spice_to_exact_steps(cfg.spice)
+    # Keep prompt compact; smaller instruct models are sensitive to verbosity.
+    return (
+        "You are Magic ToDo.\n"
+        "Break the user's task into a clear actionable checklist.\n"
+        f"Create exactly {n_steps} unique steps (no repeats).\n"
+        "Guidelines:\n"
+        "- Each step is a short verb phrase.\n"
+        "- Include ordering and dependencies.\n"
+        "- Avoid fluff and repetition.\n"
+        "- If needed, include minimal assumptions as a 'note' on a step.\n"
+        "Return ONLY valid JSON matching this schema:\n"
+        "{\n"
+        '  "title": string,\n'
+        '  "steps": [\n'
+        '    {"text": string, "note": string|null, "substeps": [{"text": string}]|null}\n'
+        "  ]\n"
+        "}\n"
+        "After the JSON object, output a newline then the exact token ENDJSON.\n"
+        "User task:\n"
+        f"{task.strip()}\n"
+    )
+
+
+def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
+    from mlx_lm import load, stream_generate  # type: ignore
+    from mlx_lm.sample_utils import make_sampler  # type: ignore
+
+    model, tokenizer = load(cfg.model)
+
+    def _mk_prompt() -> str:
+        messages = [{"role": "user", "content": _build_prompt(task, cfg)}]
+        if hasattr(tokenizer, "apply_chat_template"):
+            return tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+        return messages[0]["content"]
+
+    def _mk_sampler(temp: float, top_p: float):
+        return make_sampler(temp=temp, top_p=top_p)
+
+    def _run_once(*, temp: float, top_p: float) -> str:
+        prompt = _mk_prompt()
+        sampler = _mk_sampler(temp, top_p)
+
+        gen_kwargs: dict[str, Any] = {"sampler": sampler}
+        if cfg.seed is not None:
+            gen_kwargs["seed"] = cfg.seed
+
+        # Stream so we can stop early when the model emits ENDJSON, but only
+        # after we've actually started a JSON object (avoid premature "ENDJSON").
+        parts: list[str] = []
+        seen_lbrace = False
+        for r in stream_generate(model, tokenizer, prompt, max_tokens=cfg.max_tokens, **gen_kwargs):
+            parts.append(r.text)
+            if not seen_lbrace and "{" in r.text:
+                seen_lbrace = True
+            tail = "".join(parts[-12:])
+            if seen_lbrace and ("ENDJSON" in r.text or "\nENDJSON" in tail):
+                break
+        return "".join(parts)
+
+    def _parse(text: str) -> dict[str, Any]:
+        json_str = _extract_first_json_object(text)
+        obj = json.loads(json_str)
+        return _validate_plan(obj)
+
+    text = _run_once(temp=cfg.temp, top_p=cfg.top_p)
+    try:
+        return _parse(text)
+    except Exception as e1:
+        # Retry once with stricter sampling; many small instruct models are
+        # sensitive to temperature and may emit no JSON on first try.
+        text2 = _run_once(temp=0.0, top_p=1.0)
+        try:
+            return _parse(text2)
+        except Exception as e2:
+            sys.stderr.write("Failed to parse model output as JSON.\n")
+            sys.stderr.write(f"First error: {type(e1).__name__}: {e1}\n")
+            sys.stderr.write("Raw model output (attempt 1):\n")
+            sys.stderr.write(text.strip() + "\n")
+            sys.stderr.write(f"Second error: {type(e2).__name__}: {e2}\n")
+            sys.stderr.write("Raw model output (attempt 2):\n")
+            sys.stderr.write(text2.strip() + "\n")
+            raise
+
+
+def _iter_steps(plan: dict[str, Any]) -> Iterable[tuple[int, str, str | None, list[str] | None]]:
+    steps = plan["steps"]
+    for i, s in enumerate(steps, start=1):
+        text = str(s.get("text", "")).strip()
+        note = s.get("note")
+        note_s = None if note is None else str(note).strip() or None
+        sub = s.get("substeps")
+        if isinstance(sub, list):
+            substeps = []
+            for ss in sub:
+                if isinstance(ss, dict) and isinstance(ss.get("text"), str):
+                    t = ss["text"].strip()
+                    if t:
+                        substeps.append(t)
+            substeps_out = substeps or None
+        else:
+            substeps_out = None
+        yield (i, text, note_s, substeps_out)
+
+
+def _print_plan(plan: dict[str, Any], fmt: str) -> None:
+    title = plan.get("title")
+    if isinstance(title, str) and title.strip():
+        if fmt == "md":
+            print(f"# {title.strip()}\n")
+        else:
+            print(f"{title.strip()}\n")
+
+    for i, text, note, substeps in _iter_steps(plan):
+        if fmt == "md":
+            print(f"- [ ] {text}")
+            if note:
+                print(f"  - Note: {note}")
+            if substeps:
+                for ss in substeps:
+                    print(f"  - [ ] {ss}")
+        else:
+            print(f"{i}. {text}")
+            if note:
+                print(f"   note: {note}")
+            if substeps:
+                for j, ss in enumerate(substeps, start=1):
+                    print(f"   {i}.{j} {ss}")
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        prog="magic_todo_mlx",
+        description="Magic ToDo clone (terminal) powered by local MLX-LM models.",
+    )
+    ap.add_argument("task", nargs="*", help="Task text. If omitted, reads stdin.")
+    ap.add_argument(
+        "--model",
+        default=os.environ.get("MAGIC_TODO_MODEL", "mlx-community/Llama-3.2-1B-Instruct-4bit"),
+        help="MLX model repo id (default: mlx-community/Llama-3.2-1B-Instruct-4bit).",
+    )
+    ap.add_argument("--spice", type=int, default=3, choices=[1, 2, 3, 4, 5], help="Granularity 1-5.")
+    ap.add_argument("--max-tokens", type=int, default=900, help="Max tokens to generate.")
+    ap.add_argument("--temp", type=float, default=0.2, help="Sampling temperature.")
+    ap.add_argument("--top-p", type=float, default=0.9, help="Nucleus sampling top_p.")
+    ap.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility.")
+    ap.add_argument("--format", choices=["text", "md", "json"], default="text", help="Output format.")
+    ap.add_argument("--list-models", action="store_true", help="List cached mlx-community models and exit.")
+    ap.add_argument(
+        "--hf-cache",
+        default=str(HF_CACHE_DEFAULT),
+        help=f"HuggingFace cache root (default: {HF_CACHE_DEFAULT}).",
+    )
+
+    args = ap.parse_args(argv)
+
+    cache_root = Path(args.hf_cache).expanduser()
+    if args.list_models:
+        for m in _guess_cached_mlx_community_models(cache_root):
+            print(m)
+        return 0
+
+    task = " ".join(args.task).strip()
+    if not task:
+        task = sys.stdin.read().strip()
+    if not task:
+        ap.error("Provide a task as arguments or via stdin.")
+
+    cfg = GenCfg(
+        model=args.model,
+        spice=args.spice,
+        max_tokens=args.max_tokens,
+        temp=args.temp,
+        top_p=args.top_p,
+        seed=args.seed,
+    )
+
+    plan = _generate_plan(task, cfg)
+
+    if args.format == "json":
+        print(json.dumps(plan, indent=2, ensure_ascii=True))
+    else:
+        _print_plan(plan, args.format)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
