@@ -20,12 +20,49 @@
   "Magic ToDo task breakdown in Org."
   :group 'org)
 
-(defcustom magic-todo-org-python "/Users/alice/v/.venv-mlx-lm/bin/python"
-  "Python used to run the Magic ToDo generator."
+(defun magic-todo-org--clean-python-env ()
+  "Return `process-environment' with PYTHONPATH and PYTHONHOME removed.
+Prevents flox/nix system packages from shadowing the venv."
+  (cl-remove-if (lambda (e)
+                  (or (string-prefix-p "PYTHONPATH=" e)
+                      (string-prefix-p "PYTHONHOME=" e)))
+                process-environment))
+
+(defun magic-todo-org--walk-up-for (filename &optional start)
+  "Walk up from START looking for FILENAME, return full path or nil."
+  (let ((dir (or start default-directory)))
+    (cl-block nil
+      (while dir
+        (let ((candidate (expand-file-name filename dir)))
+          (when (file-exists-p candidate)
+            (cl-return candidate)))
+        (let ((parent (file-name-directory (directory-file-name dir))))
+          (if (equal parent dir)
+              (cl-return nil)
+            (setq dir parent)))))))
+
+(defun magic-todo-org--resolve-python ()
+  "Find .venv-mlx-lm/bin/python, checking `default-directory' first, then load path."
+  (or (magic-todo-org--walk-up-for ".venv-mlx-lm/bin/python" default-directory)
+      (magic-todo-org--walk-up-for
+       ".venv-mlx-lm/bin/python"
+       (file-name-directory (or load-file-name buffer-file-name "")))
+      magic-todo-org-python))
+
+(defun magic-todo-org--resolve-script ()
+  "Find scripts/magic_todo_mlx.py, checking `default-directory' first, then load path."
+  (or (magic-todo-org--walk-up-for "scripts/magic_todo_mlx.py" default-directory)
+      (magic-todo-org--walk-up-for
+       "scripts/magic_todo_mlx.py"
+       (file-name-directory (or load-file-name buffer-file-name "")))
+      magic-todo-org-script))
+
+(defcustom magic-todo-org-python "python3"
+  "Fallback Python for Magic ToDo. Normally auto-detected from .venv-mlx-lm."
   :type 'string)
 
-(defcustom magic-todo-org-script "/Users/alice/v/scripts/magic_todo_mlx.py"
-  "Path to scripts/magic_todo_mlx.py."
+(defcustom magic-todo-org-script "magic_todo_mlx.py"
+  "Fallback path to magic_todo_mlx.py. Normally auto-detected."
   :type 'string)
 
 (defcustom magic-todo-org-default-model "mlx-community/Llama-3.2-1B-Instruct-4bit"
@@ -66,33 +103,39 @@
   "Last model used via UI.")
 
 (defun magic-todo-org--assert-exec ()
-  (dolist (p (list magic-todo-org-python magic-todo-org-script))
-    (unless (file-exists-p p)
-      (user-error "Missing: %s" p))))
+  (let ((py (magic-todo-org--resolve-python))
+        (sc (magic-todo-org--resolve-script)))
+    (unless (file-exists-p py)
+      (user-error "Missing python: %s (create .venv-mlx-lm with: python3 -m venv .venv-mlx-lm && .venv-mlx-lm/bin/pip install -r requirements.txt)" py))
+    (unless (file-exists-p sc)
+      (user-error "Missing script: %s" sc))))
 
 (defun magic-todo-org--call-json (task spice model)
   "Return parsed JSON object from generator for TASK."
   (magic-todo-org--assert-exec)
-  (with-temp-buffer
-    (insert task)
-    (let ((args (list magic-todo-org-script
-                      "--format" "json"
-                      "--spice" (number-to-string spice)
-                      "--model" model
-                      "--max-tokens" (number-to-string magic-todo-org-default-max-tokens)
-                      "--temp" (number-to-string magic-todo-org-temp)
-                      "--top-p" (number-to-string magic-todo-org-top-p)))
-          (errfile (make-temp-file "magic-todo-org-stderr-" nil ".log")))
-      (unwind-protect
-          (let ((exit (apply
-                       #'call-process-region
-                       (point-min)
-                       (point-max)
-                       magic-todo-org-python
-                       nil
-                       (list t errfile)
-                       nil
-                       args)))
+  (let ((python (magic-todo-org--resolve-python))
+        (script (magic-todo-org--resolve-script))
+        (process-environment (magic-todo-org--clean-python-env)))
+    (with-temp-buffer
+      (insert task)
+      (let ((args (list script
+                        "--format" "json"
+                        "--spice" (number-to-string spice)
+                        "--model" model
+                        "--max-tokens" (number-to-string magic-todo-org-default-max-tokens)
+                        "--temp" (number-to-string magic-todo-org-temp)
+                        "--top-p" (number-to-string magic-todo-org-top-p)))
+            (errfile (make-temp-file "magic-todo-org-stderr-" nil ".log")))
+        (unwind-protect
+            (let ((exit (apply
+                         #'call-process-region
+                         (point-min)
+                         (point-max)
+                         python
+                         nil
+                         (list t errfile)
+                         nil
+                         args)))
             (unless (equal exit 0)
               (let ((stderr (when (file-exists-p errfile)
                               (with-temp-buffer
@@ -123,15 +166,17 @@
               (json-array-type 'list)
               (json-false nil)
               (json-null nil))
-          (json-read-from-string (substring raw start end)))))))
+          (json-read-from-string (substring raw start end))))))))
 
 (defun magic-todo-org--cached-models ()
   (magic-todo-org--assert-exec)
-  (with-temp-buffer
-    (let ((exit (process-file magic-todo-org-python nil t nil magic-todo-org-script "--list-models")))
-      (if (equal exit 0)
-          (split-string (string-trim (buffer-string)) "\n" t)
-        nil))))
+  (let ((process-environment (magic-todo-org--clean-python-env)))
+    (with-temp-buffer
+      (let ((exit (process-file (magic-todo-org--resolve-python) nil t nil
+                                (magic-todo-org--resolve-script) "--list-models")))
+        (if (equal exit 0)
+            (split-string (string-trim (buffer-string)) "\n" t)
+          nil)))))
 
 (defun magic-todo-org--read-spice ()
   (let* ((choices '("1" "2" "3" "4" "5"))

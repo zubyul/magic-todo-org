@@ -8,11 +8,20 @@ already present in the HuggingFace cache.
 
 from __future__ import annotations
 
+# Strip PYTHONPATH early to prevent nix/flox system packages from shadowing
+# the venv's own site-packages (e.g. an old huggingface_hub leaking in).
+import os
+import sys
+
+_pp = os.environ.pop("PYTHONPATH", None)
+if _pp:
+    # Remove any PYTHONPATH-injected dirs from sys.path that aren't ours
+    _venv = sys.prefix
+    sys.path[:] = [p for p in sys.path if p.startswith(_venv) or p == "" or "site-packages" not in p or p.startswith(sys.base_prefix)]
+
 import argparse
 import json
-import os
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable

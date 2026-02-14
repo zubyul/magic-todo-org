@@ -1,3 +1,5 @@
 mlx
 mlx-lm
+huggingface_hub>=1.0
+transformers>=5.0
 
