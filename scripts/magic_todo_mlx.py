@@ -123,9 +123,13 @@ def _extract_first_json_object(text: str) -> str:
 
 
 def _repair_json(text: str) -> str:
-    """Try to close unclosed braces/brackets in a JSON fragment."""
+    """Try to fix common JSON issues from LLM output."""
     # Strip trailing commas before closing delimiters and at end
     text = re.sub(r",\s*$", "", text.rstrip())
+    # Fix missing commas between key-value pairs: "value" "key" -> "value", "key"
+    text = re.sub(r'"\s*\n?\s*"(?=[a-z_])', '", "', text)
+    # Fix missing commas between objects: } { -> }, {
+    text = re.sub(r"}\s*\n?\s*{", "}, {", text)
     # Count unmatched openers
     stack = []
     in_string = False
@@ -179,44 +183,40 @@ class GenCfg:
     context: str | None = None
 
 
-def _build_prompt(task: str, cfg: GenCfg) -> str:
+def _build_messages(task: str, cfg: GenCfg) -> list[dict[str, str]]:
     guidance = _spice_to_guidance(cfg.spice)
-    parts = [
-        "You are Magic ToDo, a task breakdown assistant.\n"
-        "IMPORTANT: Your ENTIRE response must be a single valid JSON object "
-        "and NOTHING else — no explanation, no markdown, no numbered lists.\n\n"
+    system = (
+        "You are Magic ToDo. You break tasks into actionable checklists.\n"
+        "You MUST respond with ONLY a JSON object — no prose, no markdown, no lists.\n"
+        "Schema: {\"title\": \"...\", \"steps\": [{\"text\": \"...\", \"substeps\": null}]}\n"
+        "After the JSON, output ENDJSON on its own line."
+    )
+    user_parts = [
         f"{guidance}\n"
         "Rules:\n"
-        "- Every step MUST be a concrete action someone can DO, starting with a verb.\n"
-        "- If a good default tool, command, or resource exists for a step, mention it "
-        "inline with an alternative (e.g. 'Resize images using ImageMagick or ffmpeg' "
-        "not just 'Resize images').\n"
-        "- NEVER include vague steps like 'plan the project', 'consider options', "
-        "'review everything', 'finalize details', or 'ensure quality'.\n"
-        "- If a step would be vague, either skip it or break it into the real actions.\n"
-        "- No duplicate or redundant steps.\n"
-        "- Order steps by dependency — what must happen first.\n"
-        "- Use sub-steps only when a step has distinct sub-actions.\n"
+        "- Every step MUST be a concrete verb-phrase action.\n"
+        "- If a good default tool exists, mention it with an alternative "
+        "(e.g. 'Resize images using ImageMagick or ffmpeg').\n"
+        "- NEVER include vague steps like 'plan the project' or 'review everything'.\n"
+        "- No duplicates. Order by dependency. Sub-steps only when needed.\n"
     ]
     if cfg.context:
-        parts.append(
-            "\nThe user has existing breakdowns in this document. "
-            "Learn from their edits, style, and level of detail:\n"
-            f"{cfg.context.strip()}\n\n"
+        user_parts.append(
+            "\nExisting breakdowns (learn from the user's style):\n"
+            f"{cfg.context.strip()}\n"
         )
-    parts.append(
-        "\nRespond with ONLY this JSON (no other text before or after):\n"
-        "{\n"
-        '  "title": string,\n'
-        '  "steps": [\n'
-        '    {"text": string, "substeps": [{"text": string}]|null}\n'
-        "  ]\n"
-        "}\n"
-        "After the JSON object, output a newline then the exact token ENDJSON.\n\n"
-        "User task:\n"
-        f"{task.strip()}\n"
+    user_parts.append(
+        "\nExample output:\n"
+        '{"title": "Deploy app", "steps": ['
+        '{"text": "Build Docker image using docker build or podman build", "substeps": null}, '
+        '{"text": "Push image to registry using docker push or crane push", "substeps": null}'
+        "]}\nENDJSON\n\n"
+        f"Task: {task.strip()}\n"
     )
-    return "".join(parts)
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "".join(user_parts)},
+    ]
 
 
 def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
@@ -226,7 +226,7 @@ def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
     model, tokenizer = load(cfg.model)
 
     def _mk_prompt(*, prefill: str | None = None) -> str:
-        messages = [{"role": "user", "content": _build_prompt(task, cfg)}]
+        messages = _build_messages(task, cfg)
         if prefill:
             messages.append({"role": "assistant", "content": prefill})
         if hasattr(tokenizer, "apply_chat_template"):
@@ -238,10 +238,11 @@ def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
             if isinstance(result, str):
                 return result
             return tokenizer.decode(result)
-        content = messages[0]["content"]
+        # Fallback: concat all message contents
+        text = "\n\n".join(m["content"] for m in messages)
         if prefill:
-            content += "\n" + prefill
-        return content
+            text += "\n" + prefill
+        return text
 
     def _mk_sampler(temp: float, top_p: float):
         return make_sampler(temp=temp, top_p=top_p)
@@ -274,8 +275,9 @@ def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
         try:
             obj = json.loads(json_str)
         except json.JSONDecodeError:
-            # Try fixing trailing commas before ] or }
+            # Repair: trailing commas, missing commas, unclosed braces
             fixed = re.sub(r",\s*([}\]])", r"\1", json_str)
+            fixed = _repair_json(fixed)
             obj = json.loads(fixed)
         return _validate_plan(obj)
 
