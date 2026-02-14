@@ -160,6 +160,33 @@ def _repair_json(text: str) -> str:
     return text
 
 
+def _parse_freetext(text: str) -> dict[str, Any]:
+    """Last-resort parser: extract steps from numbered/bulleted lists."""
+    lines = text.strip().splitlines()
+    title = ""
+    steps: list[dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Strip list markers: "1.", "1)", "-", "*", "•", "- [ ]"
+        m = re.match(
+            r"^(?:\d+[.)]\s*|[-*\u2022]\s*(?:\[.\]\s*)?)(.*)", line
+        )
+        if m:
+            step_text = m.group(1).strip()
+            if step_text:
+                steps.append({"text": step_text, "substeps": None})
+        elif not steps and not title:
+            # First non-list line is the title
+            title = re.sub(r"^#+\s*", "", line).strip()
+    if not steps:
+        raise ValueError("No steps found in model output.")
+    if not title and steps:
+        title = steps[0]["text"]
+    return {"title": title, "steps": steps}
+
+
 def _validate_plan(obj: Any) -> dict[str, Any]:
     if not isinstance(obj, dict):
         raise ValueError("Plan JSON must be an object.")
@@ -290,19 +317,65 @@ def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
     try:
         return _parse(text)
     except Exception as e1:
-        # Retry with stricter sampling and an assistant prefill to force JSON.
-        text2 = _run_once(temp=0.0, top_p=1.0, prefill='{"title":')
+        # Self-correction: show the model its bad output + error, ask it to fix.
+        fix_messages = [
+            {"role": "system", "content": (
+                "You are a JSON repair tool. The previous attempt to produce valid JSON failed.\n"
+                "You will receive the broken output and the error message.\n"
+                "Respond with ONLY the corrected JSON object — no explanation, no markdown.\n"
+                "Schema: {\"title\": \"...\", \"steps\": [{\"text\": \"...\", \"substeps\": null}]}\n"
+                "After the JSON, output ENDJSON on its own line."
+            )},
+            {"role": "user", "content": (
+                f"Error: {type(e1).__name__}: {e1}\n\n"
+                f"Broken output:\n{text.strip()}\n\n"
+                "Fix this into valid JSON matching the schema. "
+                "You can validate with: python3 -c \"import json,sys; "
+                "d=json.loads(sys.stdin.read()); "
+                "assert 'steps' in d and isinstance(d['steps'],list), 'bad schema'\""
+            )},
+        ]
+        if hasattr(tokenizer, "apply_chat_template"):
+            fix_prompt = tokenizer.apply_chat_template(
+                fix_messages, add_generation_prompt=True, tokenize=False
+            )
+            if not isinstance(fix_prompt, str):
+                fix_prompt = tokenizer.decode(fix_prompt)
+        else:
+            fix_prompt = "\n\n".join(m["content"] for m in fix_messages)
+
+        sampler = _mk_sampler(temp=0.0, top_p=1.0)
+        gen_kwargs: dict[str, Any] = {"sampler": sampler}
+        if cfg.seed is not None:
+            gen_kwargs["seed"] = cfg.seed
+        parts2: list[str] = []
+        seen_lbrace = False
+        for r in stream_generate(model, tokenizer, fix_prompt,
+                                 max_tokens=cfg.max_tokens, **gen_kwargs):
+            parts2.append(r.text)
+            if not seen_lbrace and "{" in r.text:
+                seen_lbrace = True
+            tail = "".join(parts2[-12:])
+            if seen_lbrace and ("ENDJSON" in r.text or "\nENDJSON" in tail):
+                break
+        text2 = "".join(parts2)
         try:
             return _parse(text2)
-        except Exception as e2:
-            sys.stderr.write("Failed to parse model output as JSON.\n")
-            sys.stderr.write(f"First error: {type(e1).__name__}: {e1}\n")
-            sys.stderr.write("Raw model output (attempt 1):\n")
-            sys.stderr.write(text.strip() + "\n")
-            sys.stderr.write(f"Second error: {type(e2).__name__}: {e2}\n")
-            sys.stderr.write("Raw model output (attempt 2):\n")
-            sys.stderr.write(text2.strip() + "\n")
-            raise
+        except Exception:
+            # Last resort: parse as freetext from either attempt
+            try:
+                return _parse_freetext(text2)
+            except Exception:
+                try:
+                    return _parse_freetext(text)
+                except Exception as e_final:
+                    sys.stderr.write("Failed to parse model output.\n")
+                    sys.stderr.write(f"Original error: {type(e1).__name__}: {e1}\n")
+                    sys.stderr.write("Raw output (attempt 1):\n")
+                    sys.stderr.write(text.strip() + "\n")
+                    sys.stderr.write("Raw output (attempt 2 / fix):\n")
+                    sys.stderr.write(text2.strip() + "\n")
+                    raise
 
 
 def _iter_steps(plan: dict[str, Any]) -> Iterable[tuple[int, str, list[str] | None]]:
