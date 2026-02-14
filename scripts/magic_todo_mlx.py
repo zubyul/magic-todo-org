@@ -151,7 +151,6 @@ def _build_prompt(task: str, cfg: GenCfg) -> str:
         "- No duplicate or redundant steps.\n"
         "- Order steps by dependency — what must happen first.\n"
         "- Use sub-steps only when a step has distinct sub-actions.\n"
-        "- Notes are for brief, specific assumptions only — not filler.\n"
     ]
     if cfg.context:
         parts.append(
@@ -164,7 +163,7 @@ def _build_prompt(task: str, cfg: GenCfg) -> str:
         "{\n"
         '  "title": string,\n'
         '  "steps": [\n'
-        '    {"text": string, "note": string|null, "substeps": [{"text": string}]|null}\n'
+        '    {"text": string, "substeps": [{"text": string}]|null}\n'
         "  ]\n"
         "}\n"
         "After the JSON object, output a newline then the exact token ENDJSON.\n\n"
@@ -235,12 +234,10 @@ def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
             raise
 
 
-def _iter_steps(plan: dict[str, Any]) -> Iterable[tuple[int, str, str | None, list[str] | None]]:
+def _iter_steps(plan: dict[str, Any]) -> Iterable[tuple[int, str, list[str] | None]]:
     steps = plan["steps"]
     for i, s in enumerate(steps, start=1):
         text = str(s.get("text", "")).strip()
-        note = s.get("note")
-        note_s = None if note is None else str(note).strip() or None
         sub = s.get("substeps")
         if isinstance(sub, list):
             substeps = []
@@ -252,7 +249,7 @@ def _iter_steps(plan: dict[str, Any]) -> Iterable[tuple[int, str, str | None, li
             substeps_out = substeps or None
         else:
             substeps_out = None
-        yield (i, text, note_s, substeps_out)
+        yield (i, text, substeps_out)
 
 
 def _print_plan(plan: dict[str, Any], fmt: str) -> None:
@@ -263,18 +260,14 @@ def _print_plan(plan: dict[str, Any], fmt: str) -> None:
         else:
             print(f"{title.strip()}\n")
 
-    for i, text, note, substeps in _iter_steps(plan):
+    for i, text, substeps in _iter_steps(plan):
         if fmt == "md":
             print(f"- [ ] {text}")
-            if note:
-                print(f"  - Note: {note}")
             if substeps:
                 for ss in substeps:
                     print(f"  - [ ] {ss}")
         else:
             print(f"{i}. {text}")
-            if note:
-                print(f"   note: {note}")
             if substeps:
                 for j, ss in enumerate(substeps, start=1):
                     print(f"   {i}.{j} {ss}")
