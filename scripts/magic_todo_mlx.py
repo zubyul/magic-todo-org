@@ -82,6 +82,7 @@ def _spice_to_guidance(spice: int) -> str:
 def _extract_first_json_object(text: str) -> str:
     """
     Best-effort extractor: find the first {...} JSON object in model output.
+    Tries to repair common model output issues.
     """
     # Preferred: sentinel terminator.
     if "ENDJSON" in text:
@@ -111,7 +112,48 @@ def _extract_first_json_object(text: str) -> str:
             if depth == 0:
                 return text[start : i + 1].strip()
 
+    # Unbalanced — try closing open braces/brackets.
+    fragment = text[start:]
+    fragment = _repair_json(fragment)
+    # Verify it at least starts with { after repair
+    if fragment.startswith("{"):
+        return fragment
+
     raise ValueError("Unbalanced JSON braces in model output.")
+
+
+def _repair_json(text: str) -> str:
+    """Try to close unclosed braces/brackets in a JSON fragment."""
+    # Strip trailing commas before closing delimiters and at end
+    text = re.sub(r",\s*$", "", text.rstrip())
+    # Count unmatched openers
+    stack = []
+    in_string = False
+    escape = False
+    for c in text:
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c in ("{", "["):
+            stack.append(c)
+        elif c == "}":
+            if stack and stack[-1] == "{":
+                stack.pop()
+        elif c == "]":
+            if stack and stack[-1] == "[":
+                stack.pop()
+    # Close in reverse order
+    for opener in reversed(stack):
+        text += "]" if opener == "[" else "}"
+    return text
 
 
 def _validate_plan(obj: Any) -> dict[str, Any]:
@@ -229,7 +271,12 @@ def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
 
     def _parse(text: str) -> dict[str, Any]:
         json_str = _extract_first_json_object(text)
-        obj = json.loads(json_str)
+        try:
+            obj = json.loads(json_str)
+        except json.JSONDecodeError:
+            # Try fixing trailing commas before ] or }
+            fixed = re.sub(r",\s*([}\]])", r"\1", json_str)
+            obj = json.loads(fixed)
         return _validate_plan(obj)
 
     text = _run_once(temp=cfg.temp, top_p=cfg.top_p)
