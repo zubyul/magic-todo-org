@@ -141,7 +141,8 @@ def _build_prompt(task: str, cfg: GenCfg) -> str:
     guidance = _spice_to_guidance(cfg.spice)
     parts = [
         "You are Magic ToDo, a task breakdown assistant.\n"
-        "Your job: turn the user's task into a checklist of specific, actionable steps.\n\n"
+        "IMPORTANT: Your ENTIRE response must be a single valid JSON object "
+        "and NOTHING else — no explanation, no markdown, no numbered lists.\n\n"
         f"{guidance}\n"
         "Rules:\n"
         "- Every step MUST be a concrete action someone can DO, starting with a verb.\n"
@@ -162,7 +163,7 @@ def _build_prompt(task: str, cfg: GenCfg) -> str:
             f"{cfg.context.strip()}\n\n"
         )
     parts.append(
-        "\nReturn ONLY valid JSON matching this schema:\n"
+        "\nRespond with ONLY this JSON (no other text before or after):\n"
         "{\n"
         '  "title": string,\n'
         '  "steps": [\n'
@@ -182,17 +183,29 @@ def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
 
     model, tokenizer = load(cfg.model)
 
-    def _mk_prompt() -> str:
+    def _mk_prompt(*, prefill: str | None = None) -> str:
         messages = [{"role": "user", "content": _build_prompt(task, cfg)}]
+        if prefill:
+            messages.append({"role": "assistant", "content": prefill})
         if hasattr(tokenizer, "apply_chat_template"):
-            return tokenizer.apply_chat_template(messages, add_generation_prompt=True)
-        return messages[0]["content"]
+            result = tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=not prefill,
+                tokenize=False,
+            )
+            if isinstance(result, str):
+                return result
+            return tokenizer.decode(result)
+        content = messages[0]["content"]
+        if prefill:
+            content += "\n" + prefill
+        return content
 
     def _mk_sampler(temp: float, top_p: float):
         return make_sampler(temp=temp, top_p=top_p)
 
-    def _run_once(*, temp: float, top_p: float) -> str:
-        prompt = _mk_prompt()
+    def _run_once(*, temp: float, top_p: float, prefill: str | None = None) -> str:
+        prompt = _mk_prompt(prefill=prefill)
         sampler = _mk_sampler(temp, top_p)
 
         gen_kwargs: dict[str, Any] = {"sampler": sampler}
@@ -202,7 +215,9 @@ def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
         # Stream so we can stop early when the model emits ENDJSON, but only
         # after we've actually started a JSON object (avoid premature "ENDJSON").
         parts: list[str] = []
-        seen_lbrace = False
+        if prefill:
+            parts.append(prefill)
+        seen_lbrace = bool(prefill and "{" in prefill)
         for r in stream_generate(model, tokenizer, prompt, max_tokens=cfg.max_tokens, **gen_kwargs):
             parts.append(r.text)
             if not seen_lbrace and "{" in r.text:
@@ -221,9 +236,8 @@ def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
     try:
         return _parse(text)
     except Exception as e1:
-        # Retry once with stricter sampling; many small instruct models are
-        # sensitive to temperature and may emit no JSON on first try.
-        text2 = _run_once(temp=0.0, top_p=1.0)
+        # Retry with stricter sampling and an assistant prefill to force JSON.
+        text2 = _run_once(temp=0.0, top_p=1.0, prefill='{"title":')
         try:
             return _parse(text2)
         except Exception as e2:
