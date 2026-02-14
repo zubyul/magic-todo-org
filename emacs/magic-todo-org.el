@@ -414,7 +414,7 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
   "Alist mapping divider substring to face.")
 
 (defun magic-todo-org--apply-divider-overlays ()
-  "Apply overlays to all divider headings so they can't be overridden."
+  "Apply overlays to all divider headings, removing org's face first."
   (mapc #'delete-overlay magic-todo-org--divider-overlays)
   (setq magic-todo-org--divider-overlays nil)
   (save-excursion
@@ -428,7 +428,9 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
                              magic-todo-org--divider-faces))
                        'magic-todo-org-divider-face))
              (ov (make-overlay beg end)))
+        (remove-text-properties beg end '(face nil font-lock-face nil))
         (overlay-put ov 'face face)
+        (overlay-put ov 'priority 99)
         (overlay-put ov 'magic-todo-divider t)
         (push ov magic-todo-org--divider-overlays)))))
 
@@ -442,7 +444,9 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
   "Set up magic-todo features in Org buffers."
   (magic-todo-org--fontify-checkboxes)
   (magic-todo-org--apply-divider-overlays)
-  (add-hook 'after-save-hook #'magic-todo-org--apply-divider-overlays nil t))
+  (add-hook 'after-save-hook #'magic-todo-org--apply-divider-overlays nil t)
+  (add-hook 'font-lock-after-fontify-functions
+            (lambda (&rest _) (magic-todo-org--apply-divider-overlays)) nil t))
 
 (add-hook 'org-mode-hook #'magic-todo-org--setup)
 
