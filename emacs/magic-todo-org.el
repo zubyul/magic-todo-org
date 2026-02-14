@@ -414,25 +414,22 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
   "Alist mapping divider substring to face.")
 
 (defun magic-todo-org--apply-divider-overlays ()
-  "Replace divider headings with colored display strings org can't touch."
+  "Add colored before-string markers to divider headings."
   (mapc #'delete-overlay magic-todo-org--divider-overlays)
   (setq magic-todo-org--divider-overlays nil)
   (save-excursion
     (goto-char (point-min))
     (while (re-search-forward "^\\(\\*+ ───.*\\)$" nil t)
-      (let* ((beg (match-beginning 1))
-             (end (match-end 1))
+      (let* ((beg (line-beginning-position))
              (text (match-string 1))
              (face (or (cdr (cl-assoc-if
                              (lambda (k) (string-match-p k text))
                              magic-todo-org--divider-faces))
                        'magic-todo-org-divider-face))
-             (label (replace-regexp-in-string "^\\*+ " "" text))
-             (display-str (propertize
-                           (concat "  " label "  ")
-                           'face face))
-             (ov (make-overlay beg end)))
-        (overlay-put ov 'display display-str)
+             (bar (propertize "████████████████████████████████████████\n"
+                              'face face))
+             (ov (make-overlay beg beg)))
+        (overlay-put ov 'before-string bar)
         (overlay-put ov 'magic-todo-divider t)
         (push ov magic-todo-org--divider-overlays)))))
 
@@ -446,9 +443,7 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
   "Set up magic-todo features in Org buffers."
   (magic-todo-org--fontify-checkboxes)
   (magic-todo-org--apply-divider-overlays)
-  (add-hook 'after-save-hook #'magic-todo-org--apply-divider-overlays nil t)
-  (add-hook 'font-lock-after-fontify-functions
-            (lambda (&rest _) (magic-todo-org--apply-divider-overlays)) nil t))
+  (add-hook 'after-save-hook #'magic-todo-org--apply-divider-overlays nil t))
 
 (add-hook 'org-mode-hook #'magic-todo-org--setup)
 
