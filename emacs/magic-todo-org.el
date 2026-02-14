@@ -374,26 +374,22 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
       (magic-todo-org--insert-checklist steps))
     (save-buffer)))
 
-(defun magic-todo-org-toggle-or-return ()
-  "Toggle Org checkbox if point is on the checkbox marker, otherwise `org-return'."
-  (interactive)
-  (if (and (org-at-item-checkbox-p)
-           (save-excursion
-             (beginning-of-line)
-             (looking-at "^[ \t]*- \\[[ X-]\\]"))
-           (<= (current-column)
-               (save-excursion
-                 (beginning-of-line)
-                 (search-forward "]" (line-end-position) t)
-                 (current-column))))
-      (org-toggle-checkbox)
-    (org-return)))
+(defface magic-todo-org-done-face
+  '((t :strike-through t :foreground "gray50"))
+  "Face for checked-off checkbox items."
+  :group 'magic-todo-org)
 
-(defun magic-todo-org--bind-keys ()
-  "Set up magic-todo keybindings in Org buffers."
-  (local-set-key (kbd "RET") #'magic-todo-org-toggle-or-return))
+(defun magic-todo-org--fontify-checkboxes ()
+  "Add font-lock rules to strike through checked checkbox items."
+  (font-lock-add-keywords nil
+    '(("^[ \t]*- \\[X\\] \\(.*\\)$" 1 'magic-todo-org-done-face t))
+    'append))
 
-(add-hook 'org-mode-hook #'magic-todo-org--bind-keys)
+(defun magic-todo-org--setup ()
+  "Set up magic-todo features in Org buffers."
+  (magic-todo-org--fontify-checkboxes))
+
+(add-hook 'org-mode-hook #'magic-todo-org--setup)
 
 (provide 'magic-todo-org)
 ;;; magic-todo-org.el ends here
