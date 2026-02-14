@@ -197,7 +197,8 @@ def _build_messages(task: str, cfg: GenCfg) -> list[dict[str, str]]:
         "- Still break things down thoroughly — many small steps, not few big ones.\n"
         "- Start each step with a verb. No filler words.\n"
         "- When suggesting a tool, ALWAYS give an alternative: 'using X or Y'. Never just one.\n"
-        "- NEVER: 'consider', 'ensure', 'review', 'plan', 'finalize', 'research options'."
+        "- NEVER: 'consider', 'ensure', 'review', 'plan', 'finalize', 'research options',\n"
+        "  'write tests', 'test the', 'demo', 'verify', 'validate', 'double-check'."
     )
     user_parts = [
         f"{guidance}\n"
