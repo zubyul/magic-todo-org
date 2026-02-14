@@ -42,21 +42,41 @@ def _guess_cached_mlx_community_models(cache_root: Path) -> list[str]:
     return sorted(out)
 
 
-def _spice_to_target_steps(spice: int) -> tuple[int, int]:
-    # Roughly matches the "more/fewer steps" intent of goblin.tools' spiciness.
-    # We do not know their internal mapping; this is practical and tunable.
+def _spice_to_guidance(spice: int) -> str:
+    """Return prompt guidance calibrated to the spiciness level.
+
+    Spice reflects how hard/stressful the user finds the task:
+    1 = straightforward, just list the obvious steps
+    5 = overwhelming, break it into the smallest possible actions
+    """
     return {
-        1: (3, 6),
-        2: (6, 10),
-        3: (10, 16),
-        4: (16, 24),
-        5: (24, 36),
+        1: (
+            "This is a straightforward task. Give 3-5 concrete steps.\n"
+            "Keep it simple — only the essential actions.\n"
+        ),
+        2: (
+            "This task needs some thought. Give 5-8 concrete steps.\n"
+            "Think about what might be missed and include preparation steps.\n"
+        ),
+        3: (
+            "This task feels moderately hard. Give 8-12 concrete steps.\n"
+            "Think carefully about ordering, dependencies, and potential blockers.\n"
+            "Break any ambiguous step into its real sub-actions.\n"
+        ),
+        4: (
+            "This task feels hard and stressful. Give 12-18 concrete steps.\n"
+            "Think deeply about what makes this overwhelming and break those parts down.\n"
+            "Include sub-steps for anything that isn't immediately obvious how to do.\n"
+            "Consider edge cases, preparation, and follow-up actions.\n"
+        ),
+        5: (
+            "This task feels extremely overwhelming. Give 18-28 concrete steps.\n"
+            "Break everything into the smallest possible atomic actions.\n"
+            "Assume the user needs every implicit step spelled out.\n"
+            "Include sub-steps liberally. Think about what could go wrong at each stage.\n"
+            "Consider research, preparation, execution, verification, and cleanup phases.\n"
+        ),
     }[spice]
-
-
-def _spice_to_exact_steps(spice: int) -> int:
-    # Small instruct models do better with "exactly N" than a range.
-    return {1: 5, 2: 8, 3: 12, 4: 18, 5: 28}[spice]
 
 
 def _extract_first_json_object(text: str) -> str:
@@ -118,34 +138,36 @@ class GenCfg:
 
 
 def _build_prompt(task: str, cfg: GenCfg) -> str:
-    lo, hi = _spice_to_target_steps(cfg.spice)
-    n_steps = _spice_to_exact_steps(cfg.spice)
-    # Keep prompt compact; smaller instruct models are sensitive to verbosity.
+    guidance = _spice_to_guidance(cfg.spice)
     parts = [
-        "You are Magic ToDo.\n"
-        "Break the user's task into a clear actionable checklist.\n"
-        f"Create exactly {n_steps} unique steps (no repeats).\n"
-        "Guidelines:\n"
-        "- Each step is a short verb phrase.\n"
-        "- Include ordering and dependencies.\n"
-        "- Avoid fluff and repetition.\n"
-        "- If needed, include minimal assumptions as a 'note' on a step.\n"
+        "You are Magic ToDo, a task breakdown assistant.\n"
+        "Your job: turn the user's task into a checklist of specific, actionable steps.\n\n"
+        f"{guidance}\n"
+        "Rules:\n"
+        "- Every step MUST be a concrete action someone can DO, starting with a verb.\n"
+        "- NEVER include vague steps like 'plan the project', 'consider options', "
+        "'review everything', 'finalize details', or 'ensure quality'.\n"
+        "- If a step would be vague, either skip it or break it into the real actions.\n"
+        "- No duplicate or redundant steps.\n"
+        "- Order steps by dependency — what must happen first.\n"
+        "- Use sub-steps only when a step has distinct sub-actions.\n"
+        "- Notes are for brief, specific assumptions only — not filler.\n"
     ]
     if cfg.context:
         parts.append(
-            "The user has existing breakdowns in this document. "
-            "Learn from their edits and style:\n"
+            "\nThe user has existing breakdowns in this document. "
+            "Learn from their edits, style, and level of detail:\n"
             f"{cfg.context.strip()}\n\n"
         )
     parts.append(
-        "Return ONLY valid JSON matching this schema:\n"
+        "\nReturn ONLY valid JSON matching this schema:\n"
         "{\n"
         '  "title": string,\n'
         '  "steps": [\n'
         '    {"text": string, "note": string|null, "substeps": [{"text": string}]|null}\n'
         "  ]\n"
         "}\n"
-        "After the JSON object, output a newline then the exact token ENDJSON.\n"
+        "After the JSON object, output a newline then the exact token ENDJSON.\n\n"
         "User task:\n"
         f"{task.strip()}\n"
     )
