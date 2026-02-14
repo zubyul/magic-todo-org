@@ -375,12 +375,17 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
     (save-buffer)))
 
 (defun magic-todo-org-toggle-or-return ()
-  "Toggle Org checkbox if on one, otherwise do normal `org-return'."
+  "Toggle Org checkbox if point is on the checkbox marker, otherwise `org-return'."
   (interactive)
   (if (and (org-at-item-checkbox-p)
            (save-excursion
              (beginning-of-line)
-             (looking-at "^[ \t]*- \\[[ X-]\\]")))
+             (looking-at "^[ \t]*- \\[[ X-]\\]"))
+           (<= (current-column)
+               (save-excursion
+                 (beginning-of-line)
+                 (search-forward "]" (line-end-position) t)
+                 (current-column))))
       (org-toggle-checkbox)
     (org-return)))
 
