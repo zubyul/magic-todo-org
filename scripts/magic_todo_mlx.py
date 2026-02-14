@@ -193,9 +193,18 @@ def _validate_plan(obj: Any) -> dict[str, Any]:
     steps = obj.get("steps")
     if not isinstance(steps, list) or not steps:
         raise ValueError("Plan JSON must contain non-empty 'steps' array.")
+    # Filter out placeholder steps like "..." or "…"
+    real_steps = []
     for s in steps:
-        if not isinstance(s, dict) or not isinstance(s.get("text"), str) or not s["text"].strip():
-            raise ValueError("Each step must be an object with non-empty 'text'.")
+        if not isinstance(s, dict) or not isinstance(s.get("text"), str):
+            continue
+        text = s["text"].strip()
+        if not text or text in ("...", "…", "TBD", "TODO"):
+            continue
+        real_steps.append(s)
+    if not real_steps:
+        raise ValueError("All steps are empty or placeholders.")
+    obj["steps"] = real_steps
     return obj
 
 
