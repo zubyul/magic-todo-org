@@ -114,13 +114,14 @@ class GenCfg:
     temp: float
     top_p: float
     seed: int | None
+    context: str | None = None
 
 
 def _build_prompt(task: str, cfg: GenCfg) -> str:
     lo, hi = _spice_to_target_steps(cfg.spice)
     n_steps = _spice_to_exact_steps(cfg.spice)
     # Keep prompt compact; smaller instruct models are sensitive to verbosity.
-    return (
+    parts = [
         "You are Magic ToDo.\n"
         "Break the user's task into a clear actionable checklist.\n"
         f"Create exactly {n_steps} unique steps (no repeats).\n"
@@ -129,6 +130,14 @@ def _build_prompt(task: str, cfg: GenCfg) -> str:
         "- Include ordering and dependencies.\n"
         "- Avoid fluff and repetition.\n"
         "- If needed, include minimal assumptions as a 'note' on a step.\n"
+    ]
+    if cfg.context:
+        parts.append(
+            "The user has existing breakdowns in this document. "
+            "Learn from their edits and style:\n"
+            f"{cfg.context.strip()}\n\n"
+        )
+    parts.append(
         "Return ONLY valid JSON matching this schema:\n"
         "{\n"
         '  "title": string,\n'
@@ -140,6 +149,7 @@ def _build_prompt(task: str, cfg: GenCfg) -> str:
         "User task:\n"
         f"{task.strip()}\n"
     )
+    return "".join(parts)
 
 
 def _generate_plan(task: str, cfg: GenCfg) -> dict[str, Any]:
@@ -256,14 +266,15 @@ def main(argv: list[str]) -> int:
     ap.add_argument("task", nargs="*", help="Task text. If omitted, reads stdin.")
     ap.add_argument(
         "--model",
-        default=os.environ.get("MAGIC_TODO_MODEL", "mlx-community/Llama-3.2-1B-Instruct-4bit"),
-        help="MLX model repo id (default: mlx-community/Llama-3.2-1B-Instruct-4bit).",
+        default=os.environ.get("MAGIC_TODO_MODEL", "mlx-community/Qwen3-8B-4bit"),
+        help="MLX model repo id (default: mlx-community/Qwen3-8B-4bit).",
     )
     ap.add_argument("--spice", type=int, default=3, choices=[1, 2, 3, 4, 5], help="Granularity 1-5.")
     ap.add_argument("--max-tokens", type=int, default=900, help="Max tokens to generate.")
     ap.add_argument("--temp", type=float, default=0.2, help="Sampling temperature.")
     ap.add_argument("--top-p", type=float, default=0.9, help="Nucleus sampling top_p.")
     ap.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility.")
+    ap.add_argument("--context", type=str, default=None, help="Existing breakdowns for context.")
     ap.add_argument("--format", choices=["text", "md", "json"], default="text", help="Output format.")
     ap.add_argument("--list-models", action="store_true", help="List cached mlx-community models and exit.")
     ap.add_argument(
@@ -293,6 +304,7 @@ def main(argv: list[str]) -> int:
         temp=args.temp,
         top_p=args.top_p,
         seed=args.seed,
+        context=args.context,
     )
 
     plan = _generate_plan(task, cfg)

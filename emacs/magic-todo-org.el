@@ -7,15 +7,6 @@
 (require 'subr-x)
 (require 'cl-lib)
 
-;; Optional UI: if transient is installed, expose a single popup menu
-;; similar to the goblin.tools page (task + spice + model + action).
-(declare-function transient-define-prefix "transient")
-
-;; If this file ever gets byte-compiled, ensure the transient macros are
-;; available at compile time (prevents partially-defined menus).
-(eval-when-compile
-  (require 'transient nil t))
-
 (defgroup magic-todo-org nil
   "Magic ToDo task breakdown in Org."
   :group 'org)
@@ -65,7 +56,7 @@ Prevents flox/nix system packages from shadowing the venv."
   "Fallback path to magic_todo_mlx.py. Normally auto-detected."
   :type 'string)
 
-(defcustom magic-todo-org-default-model "mlx-community/Llama-3.2-1B-Instruct-4bit"
+(defcustom magic-todo-org-default-model "mlx-community/Qwen3-8B-4bit"
   "Default MLX model repo id."
   :type 'string)
 
@@ -93,15 +84,6 @@ Prevents flox/nix system packages from shadowing the venv."
   "If non-nil, store model/spice/task in Org properties for refresh."
   :type 'boolean)
 
-(defvar magic-todo-org--last-task ""
-  "Last task entered via UI.")
-
-(defvar magic-todo-org--last-spice magic-todo-org-default-spice
-  "Last spice used via UI.")
-
-(defvar magic-todo-org--last-model magic-todo-org-default-model
-  "Last model used via UI.")
-
 (defun magic-todo-org--assert-exec ()
   (let ((py (magic-todo-org--resolve-python))
         (sc (magic-todo-org--resolve-script)))
@@ -110,21 +92,42 @@ Prevents flox/nix system packages from shadowing the venv."
     (unless (file-exists-p sc)
       (user-error "Missing script: %s" sc))))
 
+(defun magic-todo-org--gather-context ()
+  "Collect existing Magic ToDo breakdowns from the current buffer as context.
+Returns a string of sibling headings with their checklists, or nil."
+  (when (derived-mode-p 'org-mode)
+    (save-excursion
+      (let ((parts nil)
+            (limit 2000))
+        (goto-char (point-min))
+        (while (re-search-forward "^\\*+ \\(TODO \\|DONE \\)?" nil t)
+          (let* ((beg (line-beginning-position))
+                 (end (save-excursion (org-end-of-subtree t t) (point)))
+                 (text (buffer-substring-no-properties beg (min end (+ beg 500)))))
+            (push text parts)))
+        (when parts
+          (let ((ctx (string-join (nreverse parts) "\n")))
+            (if (> (length ctx) limit)
+                (substring ctx 0 limit)
+              ctx)))))))
+
 (defun magic-todo-org--call-json (task spice model)
   "Return parsed JSON object from generator for TASK."
   (magic-todo-org--assert-exec)
   (let ((python (magic-todo-org--resolve-python))
         (script (magic-todo-org--resolve-script))
+        (context (magic-todo-org--gather-context))
         (process-environment (magic-todo-org--clean-python-env)))
     (with-temp-buffer
       (insert task)
-      (let ((args (list script
-                        "--format" "json"
-                        "--spice" (number-to-string spice)
-                        "--model" model
-                        "--max-tokens" (number-to-string magic-todo-org-default-max-tokens)
-                        "--temp" (number-to-string magic-todo-org-temp)
-                        "--top-p" (number-to-string magic-todo-org-top-p)))
+      (let ((args (append (list script
+                                "--format" "json"
+                                "--spice" (number-to-string spice)
+                                "--model" model
+                                "--max-tokens" (number-to-string magic-todo-org-default-max-tokens)
+                                "--temp" (number-to-string magic-todo-org-temp)
+                                "--top-p" (number-to-string magic-todo-org-top-p))
+                          (when context (list "--context" context))))
             (errfile (make-temp-file "magic-todo-org-stderr-" nil ".log")))
         (unwind-protect
             (let ((exit (apply
@@ -258,64 +261,6 @@ Prevents flox/nix system packages from shadowing the venv."
     (re-search-forward "^[ \t]*:END:[ \t]*$" nil t)
     (forward-line 1)))
 
-(defun magic-todo-org--ui-read-task ()
-  (interactive)
-  (setq magic-todo-org--last-task
-        (read-string "Task: " (when (use-region-p)
-                                (buffer-substring-no-properties (region-beginning) (region-end)))))
-  magic-todo-org--last-task)
-
-(defun magic-todo-org--ui-read-spice ()
-  (interactive)
-  (setq magic-todo-org--last-spice (magic-todo-org--read-spice))
-  magic-todo-org--last-spice)
-
-(defun magic-todo-org--ui-read-model ()
-  (interactive)
-  (setq magic-todo-org--last-model (magic-todo-org--read-model))
-  magic-todo-org--last-model)
-
-(defun magic-todo-org--ui-insert ()
-  (interactive)
-  (magic-todo-org-insert magic-todo-org--last-task magic-todo-org--last-spice magic-todo-org--last-model))
-
-(defun magic-todo-org--ui-roam-new ()
-  (interactive)
-  (magic-todo-org-roam-new magic-todo-org--last-task magic-todo-org--last-spice magic-todo-org--last-model))
-
-(defun magic-todo-org--transient-available-p ()
-  (require 'transient nil t))
-
-;; Define the transient UI only after transient is loaded, to avoid
-;; partial-load edge cases. We also force `require` here so calling the menu
-;; always happens in a session where transient's command registry is ready.
-(with-eval-after-load 'transient
-  (when (magic-todo-org--transient-available-p)
-    (transient-define-suffix magic-todo-org-set-task ()
-      "Set task text."
-      (interactive)
-      (magic-todo-org--ui-read-task))
-
-    (transient-define-suffix magic-todo-org-set-spice ()
-      "Set spiciness."
-      (interactive)
-      (magic-todo-org--ui-read-spice))
-
-    (transient-define-suffix magic-todo-org-set-model ()
-      "Set model."
-      (interactive)
-      (magic-todo-org--ui-read-model))
-
-    (transient-define-prefix magic-todo-org-menu ()
-      "Magic ToDo"
-      [["Inputs"
-        ("t" "Task" magic-todo-org-set-task)
-        ("s" "Spice" magic-todo-org-set-spice)
-        ("m" "Model" magic-todo-org-set-model)]
-       ["Actions"
-        ("i" "Insert here" magic-todo-org--ui-insert)
-        ("r" "New org-roam note" magic-todo-org--ui-roam-new)]])))
-
 (defun magic-todo-org--slugify (s)
   (let* ((s (downcase (string-trim s)))
          (s (replace-regexp-in-string "[^a-z0-9]+" "-" s))
@@ -343,7 +288,9 @@ MODEL is an MLX model repo id (e.g. mlx-community/Qwen3-4B-4bit)."
     (unless (listp steps)
       (user-error "Bad plan: missing steps"))
     (org-insert-heading-respect-content)
-    (insert title)
+    (insert (format "TODO %s" title))
+    (org-schedule nil (format-time-string "%Y-%m-%d"))
+    (org-end-of-meta-data t)
     (insert "\n")
     (magic-todo-org--insert-checklist steps)
     (when (use-region-p)
@@ -419,7 +366,8 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
     (when (= (buffer-size) 0)
       (insert "#+title: " title "\n")
       (insert "#+created: " (format-time-string "[%Y-%m-%d %a %H:%M]") "\n\n")
-      (insert "* " title "\n")
+      (insert (format "* TODO %s\n" title))
+      (insert (format "SCHEDULED: %s\n" (format-time-string "<%Y-%m-%d %a>")))
       (magic-todo-org--insert-checklist steps))
     (save-buffer)))
 
