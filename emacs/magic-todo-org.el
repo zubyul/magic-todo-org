@@ -414,7 +414,7 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
   "Alist mapping divider substring to face.")
 
 (defun magic-todo-org--apply-divider-overlays ()
-  "Apply overlays to all divider headings, removing org's face first."
+  "Replace divider headings with colored display strings org can't touch."
   (mapc #'delete-overlay magic-todo-org--divider-overlays)
   (setq magic-todo-org--divider-overlays nil)
   (save-excursion
@@ -427,10 +427,12 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
                              (lambda (k) (string-match-p k text))
                              magic-todo-org--divider-faces))
                        'magic-todo-org-divider-face))
+             (label (replace-regexp-in-string "^\\*+ " "" text))
+             (display-str (propertize
+                           (concat "  " label "  ")
+                           'face face))
              (ov (make-overlay beg end)))
-        (remove-text-properties beg end '(face nil font-lock-face nil))
-        (overlay-put ov 'face face)
-        (overlay-put ov 'priority 99)
+        (overlay-put ov 'display display-str)
         (overlay-put ov 'magic-todo-divider t)
         (push ov magic-todo-org--divider-overlays)))))
 
