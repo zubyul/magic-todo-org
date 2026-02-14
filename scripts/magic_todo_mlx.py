@@ -196,7 +196,7 @@ def _build_messages(task: str, cfg: GenCfg) -> list[dict[str, str]]:
         "  templates, and automation over manual editing.\n"
         "- Still break things down thoroughly — many small steps, not few big ones.\n"
         "- Start each step with a verb. No filler words.\n"
-        "- If a good tool exists, name it with one alternative (e.g. 'using X or Y').\n"
+        "- When suggesting a tool, ALWAYS give an alternative: 'using X or Y'. Never just one.\n"
         "- NEVER: 'consider', 'ensure', 'review', 'plan', 'finalize', 'research options'."
     )
     user_parts = [
@@ -212,7 +212,7 @@ def _build_messages(task: str, cfg: GenCfg) -> list[dict[str, str]]:
         '{"title": "Deploy app", "steps": ['
         '{"text": "Build image with docker build or podman", "substeps": null}, '
         '{"text": "Push to registry with docker push or crane", "substeps": null}, '
-        '{"text": "Apply k8s manifest with kubectl apply", "substeps": null}'
+        '{"text": "Apply manifest with kubectl or helm", "substeps": null}'
         "]}\nENDJSON\n\n"
         f"Task: {task.strip()}\n"
     )
