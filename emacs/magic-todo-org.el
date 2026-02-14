@@ -112,64 +112,70 @@ Returns a string of sibling headings with their checklists, or nil."
               ctx)))))))
 
 (defun magic-todo-org--call-json (task spice model)
-  "Return parsed JSON object from generator for TASK."
+  "Return parsed JSON object from generator for TASK.
+Runs asynchronously with a spinner so Emacs stays responsive."
   (magic-todo-org--assert-exec)
-  (let ((python (magic-todo-org--resolve-python))
-        (script (magic-todo-org--resolve-script))
-        (context (magic-todo-org--gather-context))
-        (process-environment (magic-todo-org--clean-python-env)))
-    (with-temp-buffer
-      (insert task)
-      (let ((args (append (list script
-                                "--format" "json"
-                                "--spice" (number-to-string spice)
-                                "--model" model
-                                "--max-tokens" (number-to-string magic-todo-org-default-max-tokens)
-                                "--temp" (number-to-string magic-todo-org-temp)
-                                "--top-p" (number-to-string magic-todo-org-top-p))
-                          (when context (list "--context" context))))
-            (errfile (make-temp-file "magic-todo-org-stderr-" nil ".log")))
-        (unwind-protect
-            (let ((exit (apply
-                         #'call-process-region
-                         (point-min)
-                         (point-max)
-                         python
-                         nil
-                         (list t errfile)
-                         nil
-                         args)))
-            (unless (equal exit 0)
-              (let ((stderr (when (file-exists-p errfile)
-                              (with-temp-buffer
-                                (insert-file-contents errfile)
-                                (buffer-string))))
-                    (stdout (buffer-string)))
-                (user-error "Magic ToDo failed (exit %s)\n\nstdout:\n%s\n\nstderr:\n%s"
-                            exit stdout (or stderr "")))))
-        (ignore-errors (delete-file errfile))))
-    (let* ((raw (buffer-string))
-           ;; The generator may emit non-JSON status text (e.g. model fetch progress).
-           ;; Extract the first JSON object from the output.
-           (start (string-match "{" raw)))
-      (unless start
-        (user-error "Magic ToDo produced no JSON.\n\nOutput:\n%s" raw))
-      (let ((depth 0)
-            (end nil)
-            (i start))
-        (while (and (< i (length raw)) (not end))
-          (pcase (aref raw i)
-            (?{ (setq depth (1+ depth)))
-            (?} (setq depth (1- depth))
-                (when (= depth 0) (setq end (1+ i)))))
-          (setq i (1+ i)))
-        (unless end
-          (user-error "Magic ToDo produced incomplete JSON.\n\nOutput:\n%s" raw))
-        (let ((json-object-type 'alist)
-              (json-array-type 'list)
-              (json-false nil)
-              (json-null nil))
-          (json-read-from-string (substring raw start end))))))))
+  (let* ((python (magic-todo-org--resolve-python))
+         (script (magic-todo-org--resolve-script))
+         (context (magic-todo-org--gather-context))
+         (process-environment (magic-todo-org--clean-python-env))
+         (args (append (list script
+                             "--format" "json"
+                             "--spice" (number-to-string spice)
+                             "--model" model
+                             "--max-tokens" (number-to-string magic-todo-org-default-max-tokens)
+                             "--temp" (number-to-string magic-todo-org-temp)
+                             "--top-p" (number-to-string magic-todo-org-top-p))
+                       (when context (list "--context" context))))
+         (outbuf (generate-new-buffer " *magic-todo-out*"))
+         (errbuf (generate-new-buffer " *magic-todo-err*"))
+         (done nil)
+         (exit-code nil)
+         (reporter (make-progress-reporter "Magic ToDo: generating...")))
+    (unwind-protect
+        (progn
+          (let ((proc (make-process
+                       :name "magic-todo"
+                       :buffer outbuf
+                       :stderr errbuf
+                       :command (cons python args)
+                       :sentinel (lambda (_p _e) (setq done t)))))
+            (process-send-string proc task)
+            (process-send-eof proc)
+            (while (not done)
+              (progress-reporter-update reporter)
+              (accept-process-output proc 0.2))
+            (setq exit-code (process-exit-status proc)))
+          (progress-reporter-done reporter)
+          (unless (equal exit-code 0)
+            (let ((stderr (with-current-buffer errbuf (buffer-string)))
+                  (stdout (with-current-buffer outbuf (buffer-string))))
+              (user-error "Magic ToDo failed (exit %s)\n\nstdout:\n%s\n\nstderr:\n%s"
+                          exit-code stdout (or stderr ""))))
+          (with-current-buffer outbuf
+            (let* ((raw (buffer-string))
+                   (start (string-match "{" raw)))
+              (unless start
+                (user-error "Magic ToDo produced no JSON.\n\nOutput:\n%s" raw))
+              (let ((depth 0)
+                    (end nil)
+                    (i start))
+                (while (and (< i (length raw)) (not end))
+                  (let ((ch (aref raw i)))
+                    (cond
+                     ((= ch 123) (setq depth (1+ depth)))  ; {
+                     ((= ch 125) (setq depth (1- depth))    ; }
+                      (when (= depth 0) (setq end (1+ i))))))
+                  (setq i (1+ i)))
+                (unless end
+                  (user-error "Magic ToDo produced incomplete JSON.\n\nOutput:\n%s" raw))
+                (let ((json-object-type 'alist)
+                      (json-array-type 'list)
+                      (json-false nil)
+                      (json-null nil))
+                  (json-read-from-string (substring raw start end)))))))
+      (kill-buffer errbuf)
+      (kill-buffer outbuf))))
 
 (defun magic-todo-org--cached-models ()
   (magic-todo-org--assert-exec)
