@@ -374,5 +374,18 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
       (magic-todo-org--insert-checklist steps))
     (save-buffer)))
 
+(defun magic-todo-org-toggle-or-return ()
+  "Toggle Org checkbox if on one, otherwise do normal `org-return'."
+  (interactive)
+  (if (and (org-at-item-checkbox-p)
+           (save-excursion
+             (beginning-of-line)
+             (looking-at "^[ \t]*- \\[[ X-]\\]")))
+      (org-toggle-checkbox)
+    (org-return)))
+
+(with-eval-after-load 'org
+  (define-key org-mode-map (kbd "RET") #'magic-todo-org-toggle-or-return))
+
 (provide 'magic-todo-org)
 ;;; magic-todo-org.el ends here
