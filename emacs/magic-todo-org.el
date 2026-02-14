@@ -391,18 +391,15 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
     'append))
 
 (defun magic-todo-org--fontify-dividers ()
-  "Fontify group divider headings after org's own fontification."
-  (add-hook 'org-font-lock-hook #'magic-todo-org--apply-divider-faces nil t))
+  "Add divider heading rule via org's own keyword mechanism."
+  (push '("^\\*+ ───.*$" 0 'magic-todo-org-divider-face t)
+        org-font-lock-extra-keywords))
 
-(defun magic-todo-org--apply-divider-faces (limit)
-  "Apply divider face to lines matching * ─── between point and LIMIT."
-  (while (re-search-forward "^\\*+ ───.*$" limit t)
-    (put-text-property (match-beginning 0) (match-end 0) 'face 'magic-todo-org-divider-face)))
+(add-hook 'org-font-lock-set-keywords-hook #'magic-todo-org--fontify-dividers)
 
 (defun magic-todo-org--setup ()
   "Set up magic-todo features in Org buffers."
-  (magic-todo-org--fontify-checkboxes)
-  (magic-todo-org--fontify-dividers))
+  (magic-todo-org--fontify-checkboxes))
 
 (add-hook 'org-mode-hook #'magic-todo-org--setup)
 
