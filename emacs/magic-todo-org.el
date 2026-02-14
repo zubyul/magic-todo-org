@@ -389,8 +389,11 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
       (org-toggle-checkbox)
     (org-return)))
 
-(with-eval-after-load 'org
-  (define-key org-mode-map (kbd "RET") #'magic-todo-org-toggle-or-return))
+(defun magic-todo-org--bind-keys ()
+  "Set up magic-todo keybindings in Org buffers."
+  (local-set-key (kbd "RET") #'magic-todo-org-toggle-or-return))
+
+(add-hook 'org-mode-hook #'magic-todo-org--bind-keys)
 
 (provide 'magic-todo-org)
 ;;; magic-todo-org.el ends here
