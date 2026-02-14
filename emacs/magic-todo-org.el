@@ -379,10 +379,58 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
   "Face for checked-off checkbox items."
   :group 'magic-todo-org)
 
-(defface magic-todo-org-divider-face
-  '((t :foreground "gold" :weight bold :height 1.3 :underline t))
-  "Face for group divider headings (lines starting with * ───)."
+(defface magic-todo-org-divider-personal
+  '((((class color) (min-colors 256)) :foreground "#ff79c6" :weight bold)
+    (t :foreground "magenta" :weight bold))
+  "Face for Personal group divider."
   :group 'magic-todo-org)
+
+(defface magic-todo-org-divider-basin
+  '((((class color) (min-colors 256)) :foreground "#50fa7b" :weight bold)
+    (t :foreground "green" :weight bold))
+  "Face for Basin & Warehouse group divider."
+  :group 'magic-todo-org)
+
+(defface magic-todo-org-divider-learning
+  '((((class color) (min-colors 256)) :foreground "#8be9fd" :weight bold)
+    (t :foreground "cyan" :weight bold))
+  "Face for Learning & Research group divider."
+  :group 'magic-todo-org)
+
+(defface magic-todo-org-divider-face
+  '((((class color) (min-colors 256)) :foreground "#f1fa8c" :weight bold)
+    (t :foreground "yellow" :weight bold))
+  "Face for other group divider headings."
+  :group 'magic-todo-org)
+
+(defvar magic-todo-org--divider-overlays nil
+  "List of overlays for group dividers.")
+(make-variable-buffer-local 'magic-todo-org--divider-overlays)
+
+(defvar magic-todo-org--divider-faces
+  '(("Personal"  . magic-todo-org-divider-personal)
+    ("Basin"     . magic-todo-org-divider-basin)
+    ("Learning"  . magic-todo-org-divider-learning))
+  "Alist mapping divider substring to face.")
+
+(defun magic-todo-org--apply-divider-overlays ()
+  "Apply overlays to all divider headings so they can't be overridden."
+  (mapc #'delete-overlay magic-todo-org--divider-overlays)
+  (setq magic-todo-org--divider-overlays nil)
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward "^\\(\\*+ ───.*\\)$" nil t)
+      (let* ((beg (match-beginning 1))
+             (end (match-end 1))
+             (text (match-string 1))
+             (face (or (cdr (cl-assoc-if
+                             (lambda (k) (string-match-p k text))
+                             magic-todo-org--divider-faces))
+                       'magic-todo-org-divider-face))
+             (ov (make-overlay beg end)))
+        (overlay-put ov 'face face)
+        (overlay-put ov 'magic-todo-divider t)
+        (push ov magic-todo-org--divider-overlays)))))
 
 (defun magic-todo-org--fontify-checkboxes ()
   "Add font-lock rules to strike through checked checkbox items."
@@ -390,16 +438,11 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
     '(("^[ \t]*- \\[X\\] \\(.*\\)$" 1 'magic-todo-org-done-face t))
     'append))
 
-(defun magic-todo-org--fontify-dividers ()
-  "Add divider heading rule via org's own keyword mechanism."
-  (push '("^\\*+ ───.*$" 0 'magic-todo-org-divider-face t)
-        org-font-lock-extra-keywords))
-
-(add-hook 'org-font-lock-set-keywords-hook #'magic-todo-org--fontify-dividers)
-
 (defun magic-todo-org--setup ()
   "Set up magic-todo features in Org buffers."
-  (magic-todo-org--fontify-checkboxes))
+  (magic-todo-org--fontify-checkboxes)
+  (magic-todo-org--apply-divider-overlays)
+  (add-hook 'after-save-hook #'magic-todo-org--apply-divider-overlays nil t))
 
 (add-hook 'org-mode-hook #'magic-todo-org--setup)
 
