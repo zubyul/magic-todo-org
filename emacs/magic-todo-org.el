@@ -379,15 +379,27 @@ With prefix argument FORCE-PROMPT, always prompt for model/spice/task."
   "Face for checked-off checkbox items."
   :group 'magic-todo-org)
 
+(defface magic-todo-org-divider-face
+  '((t :foreground "gold" :weight bold :height 1.3 :underline t))
+  "Face for group divider headings (lines starting with * ───)."
+  :group 'magic-todo-org)
+
 (defun magic-todo-org--fontify-checkboxes ()
   "Add font-lock rules to strike through checked checkbox items."
   (font-lock-add-keywords nil
     '(("^[ \t]*- \\[X\\] \\(.*\\)$" 1 'magic-todo-org-done-face t))
     'append))
 
+(defun magic-todo-org--fontify-dividers ()
+  "Add font-lock rules for group divider headings."
+  (font-lock-add-keywords nil
+    '(("^\\*+ ───.*$" 0 'magic-todo-org-divider-face t))
+    'append))
+
 (defun magic-todo-org--setup ()
   "Set up magic-todo features in Org buffers."
-  (magic-todo-org--fontify-checkboxes))
+  (magic-todo-org--fontify-checkboxes)
+  (magic-todo-org--fontify-dividers))
 
 (add-hook 'org-mode-hook #'magic-todo-org--setup)
 
